@@ -1,0 +1,159 @@
+import tempfile
+import io
+
+DATADIR = "/Users/rob/SoftwareStaging/countseq/scripts/ResultsForManuscript"
+PLOTDIR = "/Users/rob/SoftwareStaging/countseq/scripts/Plots"
+SCRIPTDIR = "/Users/rob/SoftwareStaging/countseq/scripts"
+
+def formatName(n):
+    ln = n.lower()
+    ndict = {'express' : 'eXpress', 'rsem' : 'RSEM', 'cufflinks' : 'Cufflinks', 'sailfish' : 'Sailfish'}
+    if ln in ndict:
+        return ndict[ln]
+    else:
+        return ln.title()
+
+##
+# Generate correlation plots for the qPCR data
+##
+rule allQPCRPlots:
+     input:
+        expand('{dir}/SRX016366_{mname}.pdf', dir=[PLOTDIR], mname=["cufflinks", "rsem", "express", "sailfish"]),
+        expand('{dir}/SRX016366_{mname}_no_y_label.pdf', dir=[PLOTDIR], mname=["cufflinks", "rsem", "express", "sailfish"]),
+        expand('{dir}/SRX016367_{mname}.pdf', dir=[PLOTDIR], mname=["cufflinks", "rsem", "express", "sailfish"]),
+        expand('{dir}/SRX016367_{mname}_no_y_label.pdf', dir=[PLOTDIR], mname=["cufflinks", "rsem", "express", "sailfish"])
+
+rule allSyntheticPlots:
+     input:
+        expand('{dir}/Homo_sapiens.GRCh37.73_{mname}.pdf', dir=[PLOTDIR], mname=["cufflinks", "rsem", "express", "sailfish"]),
+        expand('{dir}/Homo_sapiens.GRCh37.73_{mname}.stats', dir=[PLOTDIR], mname=["cufflinks", "rsem", "express", "sailfish"]),
+        expand('{dir}/Homo_sapiens.GRCh37.73_{mname}_no_y_label.pdf', dir=[PLOTDIR], mname=["cufflinks", "rsem", "express", "sailfish"]),
+        expand('{dir}/ZyaMays_{mname}.pdf', dir=[PLOTDIR], mname=["cufflinks", "express", "sailfish"]),
+        expand('{dir}/ZyaMays_{mname}.stats', dir=[PLOTDIR], mname=["cufflinks", "express", "sailfish"]),
+        expand('{dir}/ZyaMays_{mname}_no_y_label.pdf', dir=[PLOTDIR], mname=["cufflinks", "express", "sailfish"])
+     output:
+        humanStats = '{}/Homo_sapiens.GRCh37.73.stats'.format(PLOTDIR),
+        zyaMaysStats = '{}/ZyaMays.stats'.format(PLOTDIR)
+     run:
+        hsStats = [x for x in input if x.startswith('{}/Homo_sapiens.GRCh37.73'.format(PLOTDIR)) and x.endswith('.stats')]
+        zmStats = [x for x in input if x.startswith('{}/ZyaMays'.format(PLOTDIR)) and x.endswith('.stats')]
+        
+        with open(output.humanStats, 'wb') as hsFile:
+            hsFile.write('Stats for H. sapien\n####################\n\n'.encode())
+            for hf in hsStats:
+                with open(hf, 'rb') as ifile:
+                    for l in ifile:
+                        hsFile.write(l)
+                    hsFile.write(b'\n')
+        
+        with open(output.zyaMaysStats, 'wb') as zmFile:
+            zmFile.write('Stats for Z. mays\n####################\n\n'.encode())
+            for zf in zmStats:
+                with open(zf, 'rb') as ifile:
+                    for l in ifile:
+                        zmFile.write(l)
+                    zmFile.write(b'\n')
+        
+rule makeQPCRPlots:
+     input:
+        qpcr = '{}/{{dset}}.qpcr'.format(DATADIR),
+        estimates = '{}/{{dset}}.{{method}}'.format(DATADIR)
+     output:
+        withlabel = '{}/{{dset}}_{{method}}.pdf'.format(PLOTDIR),
+        nolabel = '{}/{{dset}}_{{method}}_no_y_label.pdf'.format(PLOTDIR)
+     run:        
+        methodName = formatName(input.estimates.split('.')[-1])
+        shell("""python {}/PlotCorrelation.py {{input.qpcr}} \
+                 --norm=log --name='qPCR' {{input.estimates}} \
+                 --norm=log --name='{}' --scatter --out={{output.withlabel}} \
+                 --m2=0.01""".format(SCRIPTDIR, methodName))
+        shell("""python {}/PlotCorrelation.py {{input.qpcr}} \
+                 --norm=log --name='qPCR' {{input.estimates}} \
+                 --norm=log --name='{}' --scatter --out={{output.nolabel}} \
+                 --m2=0.01 --noylabel""".format(SCRIPTDIR, methodName))
+
+rule makeSyntheticPlots:
+    input:
+        gtruth = '{}/{{dset}}.gtruth'.format(DATADIR),
+        estimates = '{}/{{dset}}.{{method}}'.format(DATADIR)
+    output:
+        withlabel = '{}/{{dset}}_{{method}}.pdf'.format(PLOTDIR),
+        nolabel = '{}/{{dset}}_{{method}}_no_y_label.pdf'.format(PLOTDIR),
+        stats = '{}/{{dset}}_{{method}}.stats'.format(PLOTDIR)
+    run:
+        mname = input.estimates.split('.')[-1]
+        methodName = formatName(mname)
+        
+        oput = shell("""python {}/PlotCorrelation.py {{input.gtruth}} \
+                 --norm=log --name='True RPKM' {{input.estimates}} \
+                 --norm=log --name='{}' --out={{output.withlabel}} \
+                 --m2=0.01""".format(SCRIPTDIR, methodName),\
+              iterable = True
+             )
+
+        dset = input.estimates.split('/')[-1].replace('.'+mname, '')
+        fname = '{}/{}_{}.stats'.format(PLOTDIR, dset, mname)
+        ofile = open(fname, 'wb')
+        ofile.write('{}\n==========\n'.format(methodName).encode())
+        for l in oput:
+            ls = str(l, encoding='utf-8')
+            if ls.startswith('Pearson r =') or ls.startswith('Spearman r ='):
+                ofile.write(l + b'\n')
+
+        oput = shell("""python {}/PlotCorrelation.py {{input.gtruth}} \
+                 --norm=id --name='True RPKM' {{input.estimates}} \
+                 --norm=id --name='{}' --noplot \
+                 --m2=0.01""".format(SCRIPTDIR, methodName),\
+              iterable = True
+             )
+
+        for l in oput:
+            ls = str(l, encoding='utf-8')
+            if ls.startswith('RMSE ') or ls.startswith('MedPE '):
+                toks = ls.split()
+                label = toks[0]
+                v = toks[-1]
+                ofile.write("{} = {}\n".format(label, v).encode())
+
+        ofile.close()
+
+        _ = shell("""python {}/PlotCorrelation.py {{input.gtruth}} \
+                 --norm=log --name='True RPKM' {{input.estimates}} \
+                 --norm=log --name='{}' --out={{output.nolabel}} \
+                 --m2=0.01 --noylabel""".format(SCRIPTDIR, methodName),\
+               iterable = True
+               )
+        
+rule plotIsoformFractions:
+     input:
+        expand('{dir}/Homo_sapiens.GRCh37.73.{method}', dir=[DATADIR], method=["gtruth", "express", "sailfish", "cufflinks", "rsem"]),
+        tgmap = '{}/Homo_sapiens.GRCh37.73.tgmap.pk'.format(DATADIR)
+     output:
+        frac = '{}/Homo_sapiens.GRCh37.73.IsoformFractions.pdf'.format(PLOTDIR),
+        rel = '{}/Homo_sapiens.GRCh37.73.IsoformErrors.pdf'.format(PLOTDIR)
+     run:
+        print(input)
+        gtfile = input[0]
+        explist = []
+        for i in range(1, len(input)-1):
+            ifile = input[i]
+            iname = input[i].split('.')[-1].title()
+            explist.append("--exp={} --name={}".format(ifile, iname))
+        expstring = " ".join(explist)
+        shell("python {}/PerIsoformResults.py --ref={{input[0]}} {} --tgmap={{input.tgmap}} --m=0.01 --out={{output.frac}} --norm".format(SCRIPTDIR, expstring))
+        shell("python {}/PerIsoformResults.py --ref={{input[0]}} {} --tgmap={{input.tgmap}} --m=0.01 --out={{output.rel}}".format(SCRIPTDIR, expstring))
+        
+rule plotRobustnessToMutations:
+    input:
+        expand('{dir}/ErrorRate_0.05_genome/quant_{num}.sf.cut.genes', dir=[DATADIR], num=range(0,10)),
+        expand('{dir}/ErrorRate_0.05_genome/quant_{num}.xprs.cut.genes', dir=[DATADIR], num=range(0,10)),
+        gtruth = '{}/SRX016366.qpcr'.format(DATADIR),
+    output:
+        '{}/RobustnessPlot.pdf'.format(PLOTDIR)
+    run:
+        samp1 = ' '.join(["--samp1={}".format(fn) for fn in input[0:10]])
+        name1 = "--name1=Sailfish"
+        samp2 = ' '.join(["--samp2={}".format(fn) for fn in input[10:-1]])
+        name2 = "--name2=eXpress"
+        shell("python {}/RobustnessPlots.py --gtruth={{input.gtruth}} {} {} {} {} --m=0.01 --out={{output}}".format( \
+               SCRIPTDIR, samp1, name1, samp2, name2))
